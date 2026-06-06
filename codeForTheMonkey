@@ -10,7 +10,7 @@
 #include <Preferences.h>
 
 // --- Settings & Security ---
-const bool USE_METRIC = true; // Restored from Code 2
+const bool USE_METRIC = true; // Set to false to display altitude in Feet
 const int SETTINGS_BUTTON_PIN = 0; 
 const char* DEVICE_PIN = "1234"; 
 
@@ -26,14 +26,14 @@ WebServer server(80);
 
 String accessToken = "";
 unsigned long tokenExpiryTime = 0;
-int pollInterval = 108000; // Restored from Code 2
+int pollInterval = 108000; // Default to 108 seconds (Guest 3-hour limit)
 unsigned long lastFetchTime = 0; // The "Stopwatch" memory
 bool isConfigured = false, needsReboot = false;
 String dynamicWifiOptions = "";
 
-// Dynamic layout dimensions for 480x320 Landscape grid (From Code 1)
-const int GRID_CENTER_X = 240; 
-const int GRID_CENTER_Y = 160;
+// Dynamic layout dimensions for 320x480 Portrait grid (Rotated 90 degrees left)
+const int GRID_CENTER_X = 160; 
+const int GRID_CENTER_Y = 240;
 
 void drawRadarGrid();
 void fetchAndMapFlights();
@@ -53,14 +53,14 @@ void setup() {
   Serial.begin(115200);
   pinMode(SETTINGS_BUTTON_PIN, INPUT_PULLUP);
   
-  // Hardware Backlight configuration mapped to physical IO27 (From Code 1)
+  // Hardware Backlight configuration mapped to physical IO27
   pinMode(27, OUTPUT); 
   digitalWrite(27, HIGH); 
   
   delay(1000); 
   
   tft.init(); 
-  tft.setRotation(1); // Landscape mode (From Code 1)
+  tft.setRotation(0); // 0 = Portrait mode (rotated 90 degrees left from landscape)
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
   tft.drawCentreString("SYSTEM BOOT...", GRID_CENTER_X, GRID_CENTER_Y - 10, 2);
@@ -135,7 +135,6 @@ void setup() {
                     "<label>Longitude:</label><br><input type='text' name='lon' value='" + String(radarLon, 4) + "' style='width:100%;' required><br><br>"
                     "<label>Range (KM):</label><br><input type='number' name='range' value='" + String((int)maxRadarRangeKm) + "' style='width:100%;' required><hr>"
                     
-                    // Restored from Code 2: Auto-handles reading the string for display
                     "<label>OpenSky Email (Optional):</label><br><input type='text' name='oid' value='" + (apiType == "auth" ? storedClientId.substring(0, storedClientId.indexOf("-api-client")) : "") + "' style='width:100%;'><br><br>"
                     "<label>Secret Key:</label><br>"
                     "<div style='display:flex; align-items:center;'>"
@@ -163,7 +162,6 @@ void setup() {
 
       if(server.arg("oid").length() > 0) {
         preferences.putString("api_type", "auth");
-        // Restored from Code 2: Automatically appends -api-client to whatever you type in
         preferences.putString("client_id", server.arg("oid") + "-api-client");
         preferences.putString("client_secret", server.arg("osec"));
       } else {
@@ -182,7 +180,7 @@ void setup() {
   } else {
     tft.fillScreen(TFT_BLACK); drawRadarGrid();
     isConfigured = true;
-    pollInterval = (apiType == "auth") ? 11000 : 108000; // Restored from Code 2
+    pollInterval = (apiType == "auth") ? 11000 : 108000;
   }
 }
 
@@ -192,12 +190,13 @@ void loop() {
     unsigned long pressTime = millis();
     bool actuallyHeld = true;
     
+    // Require user to physically hold it down for 3 solid seconds
     while (millis() - pressTime < 3000) {
       if (digitalRead(SETTINGS_BUTTON_PIN) == HIGH) {
         actuallyHeld = false; 
         break; 
       }
-      delay(10); 
+      delay(10); // Tiny debounce delay
     }
 
     if (actuallyHeld) {
@@ -217,7 +216,7 @@ void loop() {
       delay(2000); 
       ESP.restart(); 
     }
-    return; 
+    return; // Don't run any radar code while in portal mode
   }
 
   // --- 3. RADAR & NETWORK LOGIC ---
@@ -225,11 +224,12 @@ void loop() {
     WiFi.disconnect();
     delay(500);
     WiFi.begin(storedSsid.c_str(), storedPass.c_str()); 
+    // Wait up to 10 seconds to restore dropped connection
     for (int i = 0; i < 20; i++) {
       if (WiFi.status() == WL_CONNECTED) break;
       delay(500);
     }
-    if (WiFi.status() != WL_CONNECTED) delay(5000); 
+    if (WiFi.status() != WL_CONNECTED) delay(5000); // Back off if router is dead
     return;
   }
 
@@ -240,13 +240,13 @@ void loop() {
       tft.fillRect(GRID_CENTER_X - 100, GRID_CENTER_Y - 10, 200, 20, TFT_BLACK);
       tft.drawCentreString("Authenticating...", GRID_CENTER_X, GRID_CENTER_Y - 8, 1);
       if (!refreshOpenSkyToken()) {
-        lastFetchTime = millis() - pollInterval + 10000; // Restored from Code 2
+        lastFetchTime = millis() - pollInterval + 10000; // Try again in 10s if failed
         return; 
       }
     }
 
-    fetchAndMapFlights(); 
-    lastFetchTime = millis(); 
+    fetchAndMapFlights(); // Pull the data and draw the screen
+    lastFetchTime = millis(); // Reset the stopwatch!
   }
 }
 
@@ -273,8 +273,10 @@ void drawRadarGrid() {
   tft.drawCircle(GRID_CENTER_X, GRID_CENTER_Y, 36, TFT_GREEN);
   tft.drawCircle(GRID_CENTER_X, GRID_CENTER_Y, 72, TFT_GREEN);
   tft.drawCircle(GRID_CENTER_X, GRID_CENTER_Y, 118, TFT_GREEN); 
-  tft.drawLine(GRID_CENTER_X, GRID_CENTER_Y - 118, GRID_CENTER_X, GRID_CENTER_Y + 118, TFT_GREEN);
-  tft.drawLine(GRID_CENTER_X - 118, GRID_CENTER_Y, GRID_CENTER_X + 118, GRID_CENTER_Y, TFT_GREEN);
+  
+  // Single sweep arm pointing top-right (at an angle)
+  tft.drawLine(GRID_CENTER_X, GRID_CENTER_Y, GRID_CENTER_X + 83, GRID_CENTER_Y - 83, TFT_GREEN);
+  
   tft.drawRect(GRID_CENTER_X - 2, GRID_CENTER_Y - 2, 4, 4, TFT_GREEN);
 }
 
@@ -289,7 +291,7 @@ void fetchAndMapFlights() {
   
   int httpCode = http.GET();
   if (httpCode == 200) {
-    pollInterval = (apiType == "auth") ? 11000 : 108000; // Restored from Code 2
+    pollInterval = (apiType == "auth") ? 11000 : 108000; 
     
     JsonDocument doc; deserializeJson(doc, http.getString());
     tft.fillScreen(TFT_BLACK); 
@@ -334,12 +336,12 @@ void fetchAndMapFlights() {
       tft.drawString(callsign, x+5, y-12, 1);
       tft.drawString(altStr + " " + country, x+5, y, 1);
     }
-    tft.drawCentreString("TARGETS: " + String(planeCount), GRID_CENTER_X, 295, 1);
+    tft.drawCentreString("TARGETS: " + String(planeCount), GRID_CENTER_X, 450, 1);
   } else if (httpCode == 429) {
-    tft.drawCentreString("RATE LIMIT: COOLDOWN", GRID_CENTER_X, 295, 1);
+    tft.drawCentreString("RATE LIMIT: COOLDOWN", GRID_CENTER_X, 450, 1);
     pollInterval = 60000; 
   } else {
-    tft.drawCentreString("API ERR: " + String(httpCode), GRID_CENTER_X, 295, 1);
+    tft.drawCentreString("API ERR: " + String(httpCode), GRID_CENTER_X, 450, 1);
     pollInterval = 15000; 
   }
   http.end();
@@ -376,7 +378,6 @@ bool refreshOpenSkyToken() {
   http.begin(client, "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token");
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
   
-  // Restored from Code 2: Your exact POST logic
   if (http.POST("grant_type=client_credentials&client_id=" + storedClientId + "&client_secret=" + storedClientSecret) == 200) {
     JsonDocument doc; deserializeJson(doc, http.getString());
     accessToken = doc["access_token"].as<String>();
