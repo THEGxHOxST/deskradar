@@ -1,0 +1,137 @@
+#include <FS.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <SPI.h>
+#include <TFT_eSPI.h>
+#include <cmath>
+#include <Preferences.h>
+
+// --- Settings & Security ---
+const int SETTINGS_BUTTON_PIN = 0; 
+const char* DEVICE_PIN = "1991"; 
+
+// --- Configurable State Parameters ---
+float radarLat, radarLon, maxRadarRangeKm;
+String apiType = "guest", storedClientId = "", storedClientSecret = "";
+String storedSsid = "", storedPass = "";
+String lamin, lomin, lamax, lomax;
+
+bool enableSweep = true;
+bool useMetric = true;
+
+TFT_eSPI tft = TFT_eSPI();
+TFT_eSprite spr = TFT_eSprite(&tft);
+
+Preferences preferences;
+WebServer server(80);
+
+String accessToken = "";
+unsigned long tokenExpiryTime = 0;
+int pollInterval = 20000;
+unsigned long lastFetchTime = 0;
+bool isConfigured = false, needsReboot = false;
+String dynamicWifiOptions = "";
+
+struct Target {
+  int x; int y; String callsign; String details; float angle; float heading;
+};
+Target targets[30];
+int numTargets = 0;
+float sweepAngle = 0.0;
+unsigned long lastDrawTime = 0;
+bool firstFetchDone = false;
+unsigned long firstFetchTime = 0;
+
+void drawRadarGrid();
+void fetchAndMapFlights();
+void calculateBoundingBox(float lat, float lon, float rangeKm);
+void loadConfiguration();
+bool refreshOpenSkyToken();
+void runNetworkScan();
+void renderRadarFrame();
+
+void updateStatusScreen(String line1, String line2, uint16_t color) {
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(color, TFT_BLACK);
+  tft.drawCentreString(line1, 120, 100, 2);
+  tft.drawCentreString(line2, 120, 130, 2);
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(SETTINGS_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(21, OUTPUT); digitalWrite(21, HIGH);
+  
+  delay(1000); 
+  
+  tft.init(); 
+  tft.setRotation(0); 
+  tft.fillScreen(TFT_BLACK);
+
+  spr.setColorDepth(8); 
+  spr.createSprite(240, 240);
+  
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.drawCentreString("SYSTEM BOOT...", 120, 110, 2);
+
+  loadConfiguration();
+
+  preferences.begin("radar-config", true);
+  isConfigured = preferences.getBool("configured", false);
+  bool forcePortal = preferences.getBool("force_portal", false);
+  preferences.end();
+
+  if (forcePortal) {
+    preferences.begin("radar-config", false); 
+    preferences.putBool("force_portal", false); 
+    preferences.end();
+    isConfigured = false;
+  }
+
+  if (isConfigured && storedSsid.length() > 0) {
+    WiFi.persistent(false); 
+    WiFi.mode(WIFI_STA); 
+    WiFi.setHostname("DeskRadar");
+    WiFi.begin(storedSsid.c_str(), storedPass.c_str()); 
+    int timeout = 0;
+    while (WiFi.status() != WL_CONNECTED && timeout < 20) { delay(500); timeout++; }
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    isConfigured = false;
+    runNetworkScan();
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("DeskRadar-Setup");
+    server.on("/", [](){
+      server.send(200, "text/html", "<html><body><h2>DeskRadar Setup</h2><form action='/save' method='POST'>PIN: <input type='password' name='pin'><br><button type='submit'>Save</button></form></body></html>");
+    });
+    server.on("/save", [](){
+      needsReboot = true;
+      server.send(200, "text/html", "Rebooting...");
+    });
+    server.begin();
+    updateStatusScreen("PORTAL ACTIVE", "192.168.4.1", TFT_GREEN);
+  } else {
+    isConfigured = true;
+  }
+}
+
+void loop() {
+  if (digitalRead(SETTINGS_BUTTON_PIN) == LOW) { ESP.restart(); }
+  if (!isConfigured) { server.handleClient(); return; }
+  
+  if (millis() - lastFetchTime >= pollInterval) {
+    fetchAndMapFlights(); 
+    lastFetchTime = millis(); 
+  }
+
+  if (millis() - lastDrawTime > 40) {
+    renderRadarFrame();
+    lastDrawTime = millis();
+  }
+}
+
+// Keep your existing fetchAndMapFlights, renderRadarFrame, and other functions below here...
+// (Truncated for readability, ensure you include the rest of your original functions)
