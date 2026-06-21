@@ -43,8 +43,13 @@ struct Target {
   int y;
   String callsign;
   String details;
-  float angle;   // Angle from radar center (for sweep fading)
-  float heading; // Direction plane is flying (for the triangle)
+  float angle;   
+  float heading; 
+  // New tracking parameters for dead reckoning:
+  float baseLat;     // Lat from API
+  float baseLon;     // Lon from API
+  float speedMs;     // Speed in m/s
+  unsigned long fetchedAt; // millis() when data arrived
 };
 Target targets[30];
 int numTargets = 0;
@@ -300,77 +305,90 @@ void runNetworkScan() {
 }
 
 void renderRadarFrame() {
-  spr.fillSprite(TFT_BLACK); 
+  spr.fillSprite(TFT_BLACK);
   drawRadarGrid();
+
+  unsigned long now = millis();
 
   // --- Draw Targets ---
   for (int i = 0; i < numTargets; i++) {
-    int brightness = 255; // Default full brightness
+    // 1. Calculate how many seconds passed since this specific plane updated
+    float dt = (now - targets[i].fetchedAt) / 1000.0;
 
+    // 2. Dead Reckoning: Project new Lat/Lon based on heading and speed
+    // 111111 meters approx = 1 degree latitude
+    float headingRad = targets[i].heading * PI / 180.0;
+    float distanceMoved = targets[i].speedMs * dt; 
+
+    float estimatedLat = targets[i].baseLat + (distanceMoved * cos(headingRad) / 111111.0);
+    float estimatedLon = targets[i].baseLon + (distanceMoved * sin(headingRad) / (111111.0 * cos(radarLat * PI / 180.0)));
+
+    // 3. Map the estimated coordinates back to screen pixels
+    float dY = (estimatedLat - radarLat) * 111.1;
+    float dX = (estimatedLon - radarLon) * 111.1 * cos(radarLat * PI / 180.0);
+    float r = sqrt(dX * dX + dY * dY);
+
+    if (r > maxRadarRangeKm) continue; // Out of range
+
+    float tAngle = atan2(dX, dY);
+    if (tAngle < 0) tAngle += 2 * PI;
+
+    int currentX = 120 + (r / maxRadarRangeKm * 100.0) * sin(tAngle);
+    int currentY = 120 - (r / maxRadarRangeKm * 100.0) * cos(tAngle);
+
+    // 4. Handle fading and sweep mechanics
+    int brightness = 255;
     if (enableSweep) {
-      float angleDiff = sweepAngle - targets[i].angle;
+      float angleDiff = sweepAngle - tAngle; // Use dynamic angle
       if (angleDiff < 0) angleDiff += 2 * PI;
-      
-      // If sweep is enabled, only show targets if they are within the fading window
-      if (angleDiff < TWO_PI) { 
+      if (angleDiff < TWO_PI) {
         brightness = 255 - (int)((angleDiff / TWO_PI) * 255);
         if (brightness < 0) brightness = 0;
       } else {
-        brightness = 0; // Hide completely
+        brightness = 0;
       }
     }
 
     if (brightness > 0) {
       uint16_t planeColor = tft.color565(brightness, brightness, brightness);
-      uint16_t textColor = tft.color565(0, brightness, 0); 
-      
+      uint16_t textColor = tft.color565(0, brightness, 0);
       float hRad = targets[i].heading * PI / 180.0;
-      
-      // Calculate Triangle Vertices
-      int nx = targets[i].x + 6 * sin(hRad);
-      int ny = targets[i].y - 6 * cos(hRad);
-      int rx = targets[i].x + 4 * sin(hRad + 2.35); 
-      int ry = targets[i].y - 4 * cos(hRad + 2.35);
-      int lx = targets[i].x + 4 * sin(hRad - 2.35); 
-      int ly = targets[i].y - 4 * cos(hRad - 2.35);
+
+      // Draw plane triangle at the updated position
+      int nx = currentX + 6 * sin(hRad);
+      int ny = currentY - 6 * cos(hRad);
+      int rx = currentX + 4 * sin(hRad + 2.35);
+      int ry = currentY - 4 * cos(hRad + 2.35);
+      int lx = currentX + 4 * sin(hRad - 2.35);
+      int ly = currentY - 4 * cos(hRad - 2.35);
 
       spr.fillTriangle(nx, ny, rx, ry, lx, ly, planeColor);
-      
       spr.setTextColor(textColor, TFT_BLACK);
-      spr.drawString(targets[i].callsign, targets[i].x + 6, targets[i].y - 12, 1);
-      spr.drawString(targets[i].details, targets[i].x + 6, targets[i].y, 1);
+      spr.drawString(targets[i].callsign, currentX + 6, currentY - 12, 1);
+      spr.drawString(targets[i].details, currentX + 6, currentY, 1);
     }
   }
 
-
-// --- Draw Sweep Line (Full Length, Ultra-Short Tail) ---
-if (enableSweep) {
-    // Reduced to 20 lines for an ultra-short tail
+  // --- Draw Sweep Line ---
+  if (enableSweep) {
     for (int i = 19; i >= 0; i--) {
-        float trailAngle = sweepAngle - (i * 0.0122f); 
-        if (trailAngle < 0) trailAngle += 2 * PI;
-
-        // Fast fade: drops to 0 brightness by the 20th line
-        int lineBrightness = 255 - (i * 13.0);
-        if (lineBrightness < 0) lineBrightness = 0;
-
-        // Restored length back to 118 pixels
-        int tx = 120 + 118 * sin(trailAngle);
-        int ty = 120 - 118 * cos(trailAngle);
-
-        uint16_t trailColor = tft.color565(0, lineBrightness, 0);
-        spr.drawLine(120, 120, tx, ty, trailColor);
+      float trailAngle = sweepAngle - (i * 0.0122f);
+      if (trailAngle < 0) trailAngle += 2 * PI;
+      int lineBrightness = 255 - (i * 13.0);
+      if (lineBrightness < 0) lineBrightness = 0;
+      int tx = 120 + 118 * sin(trailAngle);
+      int ty = 120 - 118 * cos(trailAngle);
+      uint16_t trailColor = tft.color565(0, lineBrightness, 0);
+      spr.drawLine(120, 120, tx, ty, trailColor);
     }
-
-    // Main leading edge at full length
     int endX = 120 + 118 * sin(sweepAngle);
     int endY = 120 - 118 * cos(sweepAngle);
     spr.drawLine(120, 120, endX, endY, TFT_GREEN);
-}
+  }
 
-  // --- Draw Startup Title (Disappears after 5 seconds) ---
+  // --- Draw Startup Title ---
   if (!firstFetchDone || (millis() - firstFetchTime < 5000)) {
-    spr.setTextColor(TFT_GREEN, TFT_BLACK); 
+    spr.setTextColor(TFT_GREEN, TFT_BLACK);
     spr.drawCentreString("Desk Radar", 120, 25, 2);
     spr.drawCentreString("Loading...", 120, 45, 1);
   }
@@ -467,6 +485,10 @@ void fetchAndMapFlights() {
       targets[numTargets].details = altStr + " " + speedStr;
       targets[numTargets].angle = tAngle;
       targets[numTargets].heading = pHeading;
+      targets[numTargets].baseLat = lat;
+      targets[numTargets].baseLon = lon;
+      targets[numTargets].speedMs = speed_ms;
+      targets[numTargets].fetchedAt = lastSuccessfulFetch; 
 
       numTargets++;
     }
@@ -475,8 +497,8 @@ void fetchAndMapFlights() {
 
   else {
 
-    // If we haven't had success in 30 seconds → switch to guest mode
-    if (millis() - lastSuccessfulFetch > 30000 && !forceGuestMode) {
+    // If we haven't had success in 60 seconds → switch to guest mode
+    if (millis() - lastSuccessfulFetch > 60000 && !forceGuestMode) {
       forceGuestMode = true;
       guestModeStartTime = millis();
       apiType = "guest";
