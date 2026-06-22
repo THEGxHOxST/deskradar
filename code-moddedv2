@@ -298,7 +298,7 @@ void loop() {
   // --- 5. RENDER RADAR SCREEN (Approx 25 FPS) ---
   if (millis() - lastDrawTime > 40) {
     if (enableSweep) {
-      float rotationDuration = pollInterval / 2.0;
+      float rotationDuration = pollInterval / 1.0;
       unsigned long timeElapsed = millis() - lastFetchTime;
       sweepAngle = (fmod(timeElapsed, rotationDuration) / rotationDuration) * (2.0 * PI);
     }
