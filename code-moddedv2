@@ -298,8 +298,9 @@ void loop() {
   // --- 5. RENDER RADAR SCREEN (Approx 25 FPS) ---
   if (millis() - lastDrawTime > 40) {
     if (enableSweep) {
-      sweepAngle += 0.05;  // Radar rotation speed
-      if (sweepAngle > 2 * PI) sweepAngle -= 2 * PI;
+      float rotationDuration = pollInterval / 2.0;
+      unsigned long timeElapsed = millis() - lastFetchTime;
+      sweepAngle = (fmod(timeElapsed, rotationDuration) / rotationDuration) * (2.0 * PI);
     }
     renderRadarFrame();
     lastDrawTime = millis();
@@ -328,21 +329,21 @@ void runNetworkScan() {
 uint16_t getCategoryColor(int category, int brightness) {
   int fade255 = (255 * brightness) / 255;
   int fade128 = (128 * brightness) / 255;
-  int fade64  = (64  * brightness) / 255;
+  int fade64 = (64 * brightness) / 255;
   int fade200 = (200 * brightness) / 255;
 
   switch (category) {
-    case 2:  return tft.color565(fade255, fade255, 0);       // Tactical Yellow (Light/Cessna)
-    case 6:  return tft.color565(fade255, 0, fade255);       // Magenta / Purple (Heavy Cruise Jets)
-    case 7:  return tft.color565(fade255, 0, 0);             // Pure Fire Red (High Speed / Fighter)
-    case 8:  return tft.color565(fade255, fade64, fade64);   // Coral Pink / Red-Orange (Low Alt / Helos)
-    default: return tft.color565(fade200, fade200, fade200); // Muted Light Gray (All other traffic)
+    case 2: return tft.color565(fade255, fade255, 0);         // Tactical Yellow (Light/Cessna)
+    case 6: return tft.color565(fade255, 0, fade255);         // Magenta / Purple (Heavy Cruise Jets)
+    case 7: return tft.color565(fade255, 0, 0);               // Pure Fire Red (High Speed / Fighter)
+    case 8: return tft.color565(fade255, fade64, fade64);     // Coral Pink / Red-Orange (Low Alt / Helos)
+    default: return tft.color565(fade200, fade200, fade200);  // Muted Light Gray (All other traffic)
   }
 }
 
 void drawRadarTarget(int x, int y, float heading, uint16_t planeColor, uint16_t textColor, String callsign, String details) {
   float hRad = heading * PI / 180.0;
-  
+
   // Calculate directional triangle vector points pointing in the direction of heading
   int nx = x + 6 * sin(hRad);
   int ny = y - 6 * cos(hRad);
@@ -398,8 +399,8 @@ void renderRadarFrame() {
     // 4. Render Target if visible
     if (brightness > 0) {
       uint16_t planeColor = getCategoryColor(targets[i].category, brightness);
-      uint16_t textColor  = tft.color565(0, brightness, 0);
-      
+      uint16_t textColor = tft.color565(0, brightness, 0);
+
       drawRadarTarget(currentX, currentY, targets[i].heading, planeColor, textColor, targets[i].callsign, targets[i].details);
     }
   }
