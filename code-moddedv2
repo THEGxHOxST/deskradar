@@ -50,6 +50,7 @@ struct Target {
   float baseLon;     // Lon from API
   float speedMs;     // Speed in m/s
   unsigned long fetchedAt; // millis() when data arrived
+  int category;
 };
 Target targets[30];
 int numTargets = 0;
@@ -245,6 +246,403 @@ void loop() {
     return; 
   }
 
+  // --- 3. RADAR & NETWORK LOGIC ---
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect();
+    delay(500);
+    WiFi.begin(storedSsid.c_str(), storedPass.c_str()); 
+    for (int i = 0; i < 20; i++) {
+      if (WiFi.status() == WL_CONNECTED) break;
+      delay(500);
+    }
+    if (WiFi.status() != WL_CONNECTED) delay(5000); 
+    return;
+  }
+
+  // --- 4. THE NON-BLOCKING STOPWATCH ---
+  if (lastFetchTime == 0 || millis() - lastFetchTime >= pollInterval) {
+    
+    if (apiType == "auth" && (accessToken == "" || millis() >= tokenExpiryTime)) {
+      tft.fillRect(20, 110, 200, 20, TFT_BLACK);
+      tft.drawCentreString("Authenticating...", 120, 112, 1);
+      if (!refreshOpenSkyToken()) {
+        lastFetchTime = millis() - pollInterval + 10000; 
+        return; 
+      }
+    }
+
+    fetchAndMapFlights(); 
+    lastFetchTime = millis(); 
+  }
+
+  // --- 5. RENDER RADAR SCREEN (Approx 25 FPS) ---
+  if (millis() - lastDrawTime > 40) {
+    if (enableSweep) {
+      sweepAngle += 0.05; // Radar rotation speed
+      if (sweepAngle > 2 * PI) sweepAngle -= 2 * PI;
+    }
+    renderRadarFrame();
+    lastDrawTime = millis();
+  }
+}
+
+void runNetworkScan() {
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
+  
+  int n = WiFi.scanNetworks();
+  dynamicWifiOptions = "";
+  
+  if (n > 0) {
+    for (int i = 0; i < n; ++i) {
+      if(WiFi.SSID(i).length() > 0) {
+        dynamicWifiOptions += "<option value='" + WiFi.SSID(i) + "'>" + WiFi.SSID(i) + " (" + String(WiFi.RSSI(i)) + "dBm)</option>";
+      }
+    }
+  }
+  WiFi.scanDelete();
+}
+
+void renderRadarFrame() {
+  spr.fillSprite(TFT_BLACK);
+  drawRadarGrid();
+
+  unsigned long now = millis();
+
+  // --- Draw Targets ---
+  for (int i = 0; i < numTargets; i++) {
+    // 1. Calculate how many seconds passed since this specific plane updated
+    float dt = (now - targets[i].fetchedAt) / 1000.0;
+
+    // 2. Dead Reckoning: Project new Lat/Lon based on heading and speed
+    // 111111 meters approx = 1 degree latitude
+    float headingRad = targets[i].heading * PI / 180.0;
+    float distanceMoved = targets[i].speedMs * dt; 
+
+    float estimatedLat = targets[i].baseLat + (distanceMoved * cos(headingRad) / 111111.0);
+    float estimatedLon = targets[i].baseLon + (distanceMoved * sin(headingRad) / (111111.0 * cos(radarLat * PI / 180.0)));
+
+    // 3. Map the estimated coordinates back to screen pixels
+    float dY = (estimatedLat - radarLat) * 111.1;
+    float dX = (estimatedLon - radarLon) * 111.1 * cos(radarLat * PI / 180.0);
+    float r = sqrt(dX * dX + dY * dY);
+
+    if (r > maxRadarRangeKm) continue; // Out of range
+
+    float tAngle = atan2(dX, dY);
+    if (tAngle < 0) tAngle += 2 * PI;
+
+    int currentX = 120 + (r / maxRadarRangeKm * 100.0) * sin(tAngle);
+    int currentY = 120 - (r / maxRadarRangeKm * 100.0) * cos(tAngle);
+
+    // 4. Handle fading and sweep mechanics
+    int brightness = 255;
+    if (enableSweep) {
+      float angleDiff = sweepAngle - tAngle; // Use dynamic angle
+      if (angleDiff < 0) angleDiff += 2 * PI;
+      if (angleDiff < TWO_PI) {
+        brightness = 255 - (int)((angleDiff / TWO_PI) * 255);
+        if (brightness < 0) brightness = 0;
+      } else {
+        brightness = 0;
+      }
+    }
+
+    if (brightness > 0) {
+        float hRad = targets[i].heading * PI / 180.0;
+        
+        // Baseline colors (Fading white trail fallback)
+        uint16_t planeColor = tft.color565(brightness, brightness, brightness);
+        uint16_t textColor  = tft.color565(0, brightness, 0); // Green text
+        
+        // Calculate scaling multipliers to make custom colors fade behind the radar sweep
+        int fade255 = (int)((255 * brightness) / 255);
+        int fade128 = (int)((128 * brightness) / 255);
+        int fade200 = (int)((200 * brightness) / 255);
+        int fade64  = (int)((64  * brightness) / 255);
+
+        // ========================================================================
+        // COMPLETE OPENSKY AIRCRAFT CATEGORY MATRIX
+        // ========================================================================
+        switch (targets[i].category) {
+            case 1:  // No info / Unclassified
+                planeColor = tft.color565(fade128, fade128, fade128); // Muted Dark Gray
+                break;
+                
+            case 2:  // Light Airplanes (< 7000 kg / Cessna, Piper)
+                planeColor = tft.color565(fade255, fade255, 0);       // Tactical Yellow
+                break;
+                
+            case 3:  // Small Airplanes (7000 kg to 34000 kg)
+                planeColor = tft.color565(fade255, fade128, 0);       // Amber Orange
+                break;
+                
+            case 4:  // Large Airplanes (34000 kg to 136000 kg / Regional Jets)
+                planeColor = tft.color565(0, fade255, fade255);       // Cyan Blue
+                break;
+                
+            case 5:  // High Vortex Large Airplanes (B757, Heavy Transports)
+                planeColor = tft.color565(0, fade128, fade255);       // Deep Electric Blue
+                break;
+                
+            case 6:  // Heavy Airplanes (> 136000 kg / B747, A380 widebodies)
+                planeColor = tft.color565(fade255, 0, fade255);       // Magenta / Purple
+                break;
+                
+            case 7:  // High Maneuverability / Fighter Jets
+                planeColor = tft.color565(fade255, 0, 0);             // Pure Fire Red
+                break;
+                
+            case 8:  // Rotorcraft / Helicopters
+                planeColor = tft.color565(fade255, fade64, fade64);   // Coral Pink / Red-Orange
+                break;
+                
+            case 9:  // Gliders / Sailplanes
+                planeColor = tft.color565(fade128, fade255, fade128); // Pale Soft Green
+                break;
+                
+            case 10: // Lighter-than-air (Balloons, Airships, Blimps)
+                planeColor = tft.color565(fade255, fade255, fade128); // Cream / Pastel Yellow
+                break;
+                
+            case 11: // Parachutists / Skydived Dropcraft
+                planeColor = tft.color565(fade128, fade255, fade255); // Sky Blue
+                break;
+                
+            case 12: // Ultralight / Hang-gliders / Micro-lights
+                planeColor = tft.color565(fade200, fade255, fade200); // Light Mint Green
+                break;
+                
+            case 13: // Unmanned Aerial Vehicles / Drones
+                planeColor = tft.color565(fade128, 0, fade255);       // Deep Purple
+                break;
+                
+            case 14: // Space / Trans-atmospheric vehicles (Rockets)
+                planeColor = tft.color565(fade255, fade255, fade255); // Pure Bright White
+                break;
+                
+            case 15: // Surface Vehicle — Emergency (Airport Fire, Police)
+                planeColor = tft.color565(fade255, fade64, 0);        // Warning Neon Orange
+                break;
+                
+            case 16: // Surface Vehicle — Service (Tug trucks, fuelers)
+                planeColor = tft.color565(fade200, fade200, fade64);  // Construction Gold
+                break;
+                
+            case 17: // Point Obstacle (Tethered structures, masts)
+                planeColor = tft.color565(fade64, fade64, fade64);    // Dim Dark Outline
+                break;
+
+            default: // Category 0 (No information provided from tracking station)
+                planeColor = tft.color565(fade200, fade200, fade200); // Muted Light Gray
+                break;
+        }
+        // ========================================================================
+
+        // 3. Draw plane triangle vector pointers at the updated coordinates
+        int nx = currentX + 6 * sin(hRad);
+        int ny = currentY - 6 * cos(hRad);
+        int rx = currentX + 4 * sin(hRad + 2.35);
+        int ry = currentY - 4 * cos(hRad + 2.35);
+        int lx = currentX + 4 * sin(hRad - 2.35);
+        int ly = currentY - 4 * cos(hRad - 2.35);
+        
+        spr.fillTriangle(nx, ny, rx, ry, lx, ly, planeColor);
+        spr.setTextColor(textColor, TFT_BLACK);
+        spr.drawString(targets[i].callsign, currentX + 6, currentY - 12, 1);
+        spr.drawString(targets[i].details, currentX + 6, currentY, 1);
+    }
+  }
+
+  // --- Draw Sweep Line ---
+  if (enableSweep) {
+    for (int i = 19; i >= 0; i--) {
+      float trailAngle = sweepAngle - (i * 0.0122f);
+      if (trailAngle < 0) trailAngle += 2 * PI;
+      int lineBrightness = 255 - (i * 13.0);
+      if (lineBrightness < 0) lineBrightness = 0;
+      int tx = 120 + 118 * sin(trailAngle);
+      int ty = 120 - 118 * cos(trailAngle);
+      uint16_t trailColor = tft.color565(0, lineBrightness, 0);
+      spr.drawLine(120, 120, tx, ty, trailColor);
+    }
+    int endX = 120 + 118 * sin(sweepAngle);
+    int endY = 120 - 118 * cos(sweepAngle);
+    spr.drawLine(120, 120, endX, endY, TFT_GREEN);
+  }
+
+  // --- Draw Startup Title ---
+  if (!firstFetchDone || (millis() - firstFetchTime < 5000)) {
+    spr.setTextColor(TFT_GREEN, TFT_BLACK);
+    spr.drawCentreString("Desk Radar", 120, 25, 2);
+    spr.drawCentreString("Loading...", 120, 45, 1);
+  }
+
+  spr.pushSprite(0, 0);
+}
+
+void drawRadarGrid() {
+  uint16_t darkGreen = tft.color565(0, 80, 0); 
+  uint16_t dimText = tft.color565(0, 150, 0); 
+
+  // Circles and Crosshairs
+  spr.drawCircle(120, 120, 36, darkGreen);
+  spr.drawCircle(120, 120, 72, darkGreen);
+  spr.drawCircle(120, 120, 118, TFT_GREEN); 
+  spr.drawLine(120, 2, 120, 238, darkGreen);
+  spr.drawLine(2, 120, 238, 120, darkGreen);
+  spr.drawRect(118, 118, 4, 4, TFT_GREEN);
+
+  // Compass Markings
+  spr.setTextColor(dimText, TFT_BLACK);
+  spr.drawCentreString("N", 120, 3, 1);
+  spr.drawCentreString("S", 120, 227, 1);
+  spr.drawString("W", 4, 116, 1);
+  spr.drawString("E", 228, 116, 1);
+}
+
+void fetchAndMapFlights() {
+  HTTPClient http;
+  http.begin("https://opensky-network.org/api/states/all?lamin=" + lamin + "&lomin=" + lomin + "&lamax=" + lamax + "&lomax=" + lomax);
+
+  if (apiType == "auth" && !forceGuestMode) {
+    http.addHeader("Authorization", "Bearer " + accessToken);
+  }
+
+  int httpCode = http.GET();
+
+
+  if (httpCode == 200) {
+
+    lastSuccessfulFetch = millis();
+
+    // If we recovered from guest mode, allow retry auth after 1 hour
+    if (forceGuestMode && millis() - guestModeStartTime >= 3600000UL) {
+      forceGuestMode = false;
+    }
+
+    pollInterval = (apiType == "auth" && !forceGuestMode) ? 20000 : 108000;
+
+    if (!firstFetchDone) {
+      firstFetchDone = true;
+      firstFetchTime = millis();
+    }
+
+    JsonDocument doc;
+    deserializeJson(doc, http.getString());
+
+    JsonArray states = doc["states"].as<JsonArray>();
+    numTargets = 0;
+
+    for (JsonArray plane : states) {
+      if (numTargets >= 30) break;
+
+      float lat = plane[6].as<float>();
+      float lon = plane[5].as<float>();
+
+      float dY = (lat - radarLat) * 111.1;
+      float dX = (lon - radarLon) * 111.1 * cos(radarLat * PI / 180.0);
+      float r = sqrt(dX * dX + dY * dY);
+
+      if (r > maxRadarRangeKm) continue;
+
+      float tAngle = atan2(dX, dY);
+      if (tAngle < 0) tAngle += 2 * PI;
+
+      int x = 120 + (r / maxRadarRangeKm * 100.0) * sin(tAngle);
+      int y = 120 - (r / maxRadarRangeKm * 100.0) * cos(tAngle);
+
+      String callsign = plane[1].as<String>();
+      callsign.trim();
+      if (callsign == "" || callsign == "null") callsign = "UNK";
+
+      float alt = plane[7].as<float>();
+      float speed_ms = plane[9].isNull() ? 0.0 : plane[9].as<float>();
+
+      String altStr = useMetric ? String((int)alt) + "m" : String((int)(alt * 3.28084)) + "ft";
+      String speedStr = useMetric ? String((int)(speed_ms * 3.6)) + "km/h" : String((int)(speed_ms * 1.94384)) + "kts";
+
+      float pHeading = plane[10].isNull() ? 0.0 : plane[10].as<float>();
+      int acCategory = plane[17].isNull() ? 0 : plane[17].as<int>();
+
+      targets[numTargets].x = x;
+      targets[numTargets].y = y;
+      targets[numTargets].callsign = callsign;
+      targets[numTargets].details = altStr + " " + speedStr;
+      targets[numTargets].angle = tAngle;
+      targets[numTargets].heading = pHeading;
+      targets[numTargets].baseLat = lat;
+      targets[numTargets].baseLon = lon;
+      targets[numTargets].speedMs = speed_ms;
+      targets[numTargets].fetchedAt = lastSuccessfulFetch;
+      targets[numTargets].category = acCategory; 
+
+      numTargets++;
+    }
+  }
+
+
+  else {
+
+    // If we haven't had success in 60 seconds → switch to guest mode
+    if (millis() - lastSuccessfulFetch > 60000 && !forceGuestMode) {
+      forceGuestMode = true;
+      guestModeStartTime = millis();
+      apiType = "guest";
+    }
+
+    // If guest mode also fails, slow down polling
+    if (forceGuestMode) {
+      pollInterval = 20000;
+    } else {
+      pollInterval = 20000;
+    }
+  }
+
+  http.end();
+}
+
+void loadConfiguration() {
+  preferences.begin("radar-config", true);
+  radarLat = preferences.getFloat("lat", 56.9236);
+  radarLon = preferences.getFloat("lon", 23.9711);
+  maxRadarRangeKm = preferences.getFloat("range", 50.0);
+  apiType = preferences.getString("api_type", "guest");
+  storedClientId = preferences.getString("client_id", "");
+  storedClientSecret = preferences.getString("client_secret", "");
+  storedSsid = preferences.getString("ssid", "");
+  storedPass = preferences.getString("pass", "");
+  
+  enableSweep = preferences.getBool("sweep", true);   // Load sweep preference
+  useMetric = preferences.getBool("metric", true);     // Load metric preference
+  
+  preferences.end();
+  
+  calculateBoundingBox(radarLat, radarLon, maxRadarRangeKm);
+}
+
+void calculateBoundingBox(float lat, float lon, float rangeKm) {
+  float dL = rangeKm / 111.1;
+  lamin = String(lat - dL, 4); 
+  lamax = String(lat + dL, 4);
+  lomin = String(lon - (rangeKm / (111.1 * cos(lat * PI / 180.0))), 4);
+  lomax = String(lon + (rangeKm / (111.1 * cos(lat * PI / 180.0))), 4);
+}
+
+bool refreshOpenSkyToken() {
+  HTTPClient http;
+  http.begin("https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token");
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  if (http.POST("grant_type=client_credentials&client_id=" + storedClientId + "&client_secret=" + storedClientSecret) == 200) {
+    JsonDocument doc; deserializeJson(doc, http.getString());
+    accessToken = doc["access_token"].as<String>();
+    tokenExpiryTime = millis() + ((doc["expires_in"].as<long>() - 60) * 1000);
+    return true;
+  }
+  return false;
+}
   // --- 3. RADAR & NETWORK LOGIC ---
   if (WiFi.status() != WL_CONNECTED) {
     WiFi.disconnect();
