@@ -364,7 +364,7 @@ void drawRadarTarget(int x, int y, float heading, uint16_t planeColor, uint16_t 
     }
     
     // Dynamically flip text layout based on screen position
-    if (x > 180) {
+    if (x > 185) {
         // Draw to the left of the plane icon (Right-aligned text stack)
         spr.drawRightString(callsign, x - 6, y - 14, 1);
         spr.drawRightString(altStr,   x - 6, y - 3,  1);
