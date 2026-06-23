@@ -45,11 +45,12 @@ struct Target {
   String details;
   float angle;
   float heading;
-  // New tracking parameters for dead reckoning:
-  float baseLat;            // Lat from API
-  float baseLon;            // Lon from API
-  float speedMs;            // Speed in m/s
-  unsigned long fetchedAt;  // millis() when data arrived
+  float baseLat;
+  float baseLon;
+  float speedMs;
+  float vertRateMs;  // <-- Add this to track vertical speed
+  float baseAlt;     // <-- Add this to track base altitude at fetch time
+  unsigned long fetchedAt;
   int category;
 };
 Target targets[30];
@@ -367,27 +368,45 @@ void renderRadarFrame() {
   // --- Draw Targets ---
   for (int i = 0; i < numTargets; i++) {
     // 1. Dead Reckoning: Project new Lat/Lon coordinates
-    float dt = (now - targets[i].fetchedAt) / 1000.0;
+    unsigned long now = millis();
+    float dt = (now - targets[i].fetchedAt) / 1000.0;  // <-- Make sure this line is right here!
     float headingRad = targets[i].heading * PI / 180.0;
     float distanceMoved = targets[i].speedMs * dt;
-
     float estimatedLat = targets[i].baseLat + (distanceMoved * cos(headingRad) / 111111.0);
     float estimatedLon = targets[i].baseLon + (distanceMoved * sin(headingRad) / (111111.0 * cos(radarLat * PI / 180.0)));
 
-    // 2. Map the estimated coordinates back to display screen pixels
+    // Vertical tracking: base altitude + (rate of change * time)
+    float estimatedAlt = targets[i].baseAlt + (targets[i].vertRateMs * dt);
+    if (estimatedAlt < 0) estimatedAlt = 0;  // Prevent subterranean planes
+
+    // Convert to display units FIRST before rounding
+    int finalAltDisplay = 0;
+    if (useMetric) {
+      // Round to nearest 100 meters
+      finalAltDisplay = ((int)(estimatedAlt + 50) / 100) * 100;
+    } else {
+      // Convert to feet first, then round to nearest 100 feet
+      float altFeet = estimatedAlt * 3.28084;
+      finalAltDisplay = ((int)(altFeet + 50) / 100) * 100;
+    }
+
+    // 2. Generate details string dynamically with estimated altitude
+    String altStr = useMetric ? String(finalAltDisplay) + "m" : String(finalAltDisplay) + "ft";
+    String speedStr = useMetric ? String((int)(targets[i].speedMs * 3.6)) + "km/h" : String((int)(targets[i].speedMs * 1.94384)) + "kts";
+    String liveDetails = altStr + " " + speedStr;
+
+    // 3. Map the estimated coordinates back to display screen pixels
     float dY = (estimatedLat - radarLat) * 111.1;
     float dX = (estimatedLon - radarLon) * 111.1 * cos(radarLat * PI / 180.0);
     float r = sqrt(dX * dX + dY * dY);
-
-    if (r > maxRadarRangeKm) continue;  // Drop out-of-range targets
+    if (r > maxRadarRangeKm) continue;
 
     float tAngle = atan2(dX, dY);
     if (tAngle < 0) tAngle += 2 * PI;
-
     int currentX = 120 + (r / maxRadarRangeKm * 100.0) * sin(tAngle);
     int currentY = 120 - (r / maxRadarRangeKm * 100.0) * cos(tAngle);
 
-    // 3. Handle fade properties and sweep mechanics
+    // 4. Handle fade properties and sweep mechanics
     int brightness = 255;
     if (enableSweep) {
       float angleDiff = sweepAngle - tAngle;
@@ -396,15 +415,14 @@ void renderRadarFrame() {
       if (brightness < 0) brightness = 0;
     }
 
-    // 4. Render Target if visible
+    // 5. Render Target if visible
     if (brightness > 0) {
       uint16_t planeColor = getCategoryColor(targets[i].category, brightness);
       uint16_t textColor = tft.color565(0, brightness, 0);
-
-      drawRadarTarget(currentX, currentY, targets[i].heading, planeColor, textColor, targets[i].callsign, targets[i].details);
+      // Pass liveDetails instead of static targets[i].details
+      drawRadarTarget(currentX, currentY, targets[i].heading, planeColor, textColor, targets[i].callsign, liveDetails);
     }
   }
-
   // --- Draw Sweep Line ---
   if (enableSweep) {
     for (int i = 19; i >= 0; i--) {
@@ -495,14 +513,14 @@ void fetchAndMapFlights() {
       callsign.trim();
       if (callsign == "" || callsign == "null") callsign = "UNK";
 
+      //String altStr = useMetric ? String((int)alt) + "m" : String((int)(alt * 3.28084)) + "ft";
+      //String speedStr = useMetric ? String((int)(speed_ms * 3.6)) + "km/h" : String((int)(speed_ms * 1.94384)) + "kts";
+
       float alt = plane[7].as<float>();
       float speed_ms = plane[9].isNull() ? 0.0 : plane[9].as<float>();
-
-      String altStr = useMetric ? String((int)alt) + "m" : String((int)(alt * 3.28084)) + "ft";
-      String speedStr = useMetric ? String((int)(speed_ms * 3.6)) + "km/h" : String((int)(speed_ms * 1.94384)) + "kts";
+      float vert_rate = plane[11].isNull() ? 0.0 : plane[11].as<float>();
 
       float pHeading = plane[10].isNull() ? 0.0 : plane[10].as<float>();
-
       int acCategory = plane[17].isNull() ? 0 : plane[17].as<int>();
 
       if (acCategory == 0) {
@@ -520,12 +538,14 @@ void fetchAndMapFlights() {
       targets[numTargets].x = x;
       targets[numTargets].y = y;
       targets[numTargets].callsign = callsign;
-      targets[numTargets].details = altStr + " " + speedStr;
+      //targets[numTargets].details = altStr + " " + speedStr;
       targets[numTargets].angle = tAngle;
       targets[numTargets].heading = pHeading;
       targets[numTargets].baseLat = lat;
       targets[numTargets].baseLon = lon;
       targets[numTargets].speedMs = speed_ms;
+      targets[numTargets].vertRateMs = vert_rate;
+      targets[numTargets].baseAlt = alt;
       targets[numTargets].fetchedAt = lastSuccessfulFetch;
       targets[numTargets].category = acCategory;
 
