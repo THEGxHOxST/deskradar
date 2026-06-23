@@ -354,15 +354,26 @@ void drawRadarTarget(int x, int y, float heading, uint16_t planeColor, uint16_t 
     
     spr.setTextColor(textColor, TFT_BLACK);
     
-    // Dynamically flip text to the left if the target is on the right half of the screen
-    if (x > 170) {
-        // Draw to the left of the plane icon (Right-aligned text)
-        spr.drawRightString(callsign, x - 6, y - 12, 1);
-        spr.drawRightString(details, x - 6, y, 1);
+    // Parse altitude and speed from the combined details string
+    String altStr = details;
+    String speedStr = "";
+    int spaceIdx = details.indexOf(' ');
+    if (spaceIdx != -1) {
+        altStr = details.substring(0, spaceIdx);
+        speedStr = details.substring(spaceIdx + 1);
+    }
+    
+    // Dynamically flip text layout based on screen position
+    if (x > 180) {
+        // Draw to the left of the plane icon (Right-aligned text stack)
+        spr.drawRightString(callsign, x - 6, y - 14, 1);
+        spr.drawRightString(altStr,   x - 6, y - 3,  1);
+        spr.drawRightString(speedStr, x - 6, y + 8,  1);
     } else {
-        // Draw to the right of the plane icon (Left-aligned text - Original way)
-        spr.drawString(callsign, x + 6, y - 12, 1);
-        spr.drawString(details, x + 6, y, 1);
+        // Draw to the right of the plane icon (Left-aligned text stack)
+        spr.drawString(callsign, x + 6, y - 14, 1);
+        spr.drawString(altStr,   x + 6, y - 3,  1);
+        spr.drawString(speedStr, x + 6, y + 8,  1);
     }
 }
 
@@ -427,7 +438,7 @@ void renderRadarFrame() {
       uint16_t planeColor = getCategoryColor(targets[i].category, brightness);
       uint16_t textColor = tft.color565(0, brightness, 0);
       // Pass liveDetails instead of static targets[i].details
-      drawRadarTarget(currentX, currentY, targets[i].heading, planeColor, textColor, targets[i].callsign, liveDetails);
+drawRadarTarget(currentX, currentY, targets[i].heading, planeColor, textColor, targets[i].callsign, liveDetails);
     }
   }
   // --- Draw Sweep Line ---
