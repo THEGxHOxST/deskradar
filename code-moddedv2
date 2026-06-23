@@ -48,8 +48,8 @@ struct Target {
   float baseLat;
   float baseLon;
   float speedMs;
-  float vertRateMs;
-  float baseAlt;
+  float vertRateMs;  // <-- Add this to track vertical speed
+  float baseAlt;     // <-- Add this to track base altitude at fetch time
   unsigned long fetchedAt;
   int category;
 };
@@ -343,20 +343,27 @@ uint16_t getCategoryColor(int category, int brightness) {
 }
 
 void drawRadarTarget(int x, int y, float heading, uint16_t planeColor, uint16_t textColor, String callsign, String details) {
-  float hRad = heading * PI / 180.0;
-
-  // Calculate directional triangle vector points pointing in the direction of heading
-  int nx = x + 6 * sin(hRad);
-  int ny = y - 6 * cos(hRad);
-  int rx = x + 4 * sin(hRad + 2.35);
-  int ry = y - 4 * cos(hRad + 2.35);
-  int lx = x + 4 * sin(hRad - 2.35);
-  int ly = y - 4 * cos(hRad - 2.35);
-
-  spr.fillTriangle(nx, ny, rx, ry, lx, ly, planeColor);
-  spr.setTextColor(textColor, TFT_BLACK);
-  spr.drawString(callsign, x + 6, y - 12, 1);
-  spr.drawString(details, x + 6, y, 1);
+    float hRad = heading * PI / 180.0;
+    int nx = x + 6 * sin(hRad);
+    int ny = y - 6 * cos(hRad);
+    int rx = x + 4 * sin(hRad + 2.35);
+    int ry = y - 4 * cos(hRad + 2.35);
+    int lx = x + 4 * sin(hRad - 2.35);
+    int ly = y - 4 * cos(hRad - 2.35);
+    spr.fillTriangle(nx, ny, rx, ry, lx, ly, planeColor);
+    
+    spr.setTextColor(textColor, TFT_BLACK);
+    
+    // Dynamically flip text to the left if the target is on the right half of the screen
+    if (x > 170) {
+        // Draw to the left of the plane icon (Right-aligned text)
+        spr.drawRightString(callsign, x - 6, y - 12, 1);
+        spr.drawRightString(details, x - 6, y, 1);
+    } else {
+        // Draw to the right of the plane icon (Left-aligned text - Original way)
+        spr.drawString(callsign, x + 6, y - 12, 1);
+        spr.drawString(details, x + 6, y, 1);
+    }
 }
 
 void renderRadarFrame() {
@@ -369,7 +376,7 @@ void renderRadarFrame() {
   for (int i = 0; i < numTargets; i++) {
     // 1. Dead Reckoning: Project new Lat/Lon coordinates
     unsigned long now = millis();
-    float dt = (now - targets[i].fetchedAt) / 1000.0;
+    float dt = (now - targets[i].fetchedAt) / 1000.0;  // <-- Make sure this line is right here!
     float headingRad = targets[i].heading * PI / 180.0;
     float distanceMoved = targets[i].speedMs * dt;
     float estimatedLat = targets[i].baseLat + (distanceMoved * cos(headingRad) / 111111.0);
