@@ -350,10 +350,10 @@ void drawRadarTarget(int x, int y, float heading, uint16_t planeColor, uint16_t 
     int ry = y - 4 * cos(hRad + 2.35);
     int lx = x + 4 * sin(hRad - 2.35);
     int ly = y - 4 * cos(hRad - 2.35);
+    
     spr.fillTriangle(nx, ny, rx, ry, lx, ly, planeColor);
-    
     spr.setTextColor(textColor, TFT_BLACK);
-    
+
     // Parse altitude and speed from the combined details string
     String altStr = details;
     String speedStr = "";
@@ -362,18 +362,32 @@ void drawRadarTarget(int x, int y, float heading, uint16_t planeColor, uint16_t 
         altStr = details.substring(0, spaceIdx);
         speedStr = details.substring(spaceIdx + 1);
     }
-    
-    // Dynamically flip text layout based on screen position
-    if (x > 185) {
-        // Draw to the left of the plane icon (Right-aligned text stack)
-        spr.drawRightString(callsign, x - 6, y - 14, 1);
-        spr.drawRightString(altStr,   x - 6, y - 3,  1);
-        spr.drawRightString(speedStr, x - 6, y + 8,  1);
+
+    // Determine vertical offsets based on screen height
+    int yCallsign, yAlt, ySpeed;
+    if (y > 205) {
+        // Too low! Flip text stack UPWARDS (Speed sits nearest to target)
+        yCallsign = y - 24; 
+        yAlt      = y - 13; 
+        ySpeed    = y - 2;  
     } else {
-        // Draw to the right of the plane icon (Left-aligned text stack)
-        spr.drawString(callsign, x + 6, y - 14, 1);
-        spr.drawString(altStr,   x + 6, y - 3,  1);
-        spr.drawString(speedStr, x + 6, y + 8,  1);
+        // Standard layout: Stack DOWNWARDS (Callsign sits nearest to target)
+        yCallsign = y - 2;  
+        yAlt      = y + 9;  
+        ySpeed    = y + 20; 
+    }
+
+    // Dynamically flip text layout based on horizontal screen position
+    if (x > 185) {
+        // Draw to the left of the plane icon (Right-aligned text)
+        spr.drawRightString(callsign, x - 6, yCallsign, 1);
+        spr.drawRightString(altStr,   x - 6, yAlt,      1);
+        spr.drawRightString(speedStr, x - 6, ySpeed,    1);
+    } else {
+        // Draw to the right of the plane icon (Left-aligned text)
+        spr.drawString(callsign, x + 6, yCallsign, 1);
+        spr.drawString(altStr,   x + 6, yAlt,      1);
+        spr.drawString(speedStr, x + 6, ySpeed,    1);
     }
 }
 
